@@ -1,0 +1,22 @@
+{
+  "name": "clawdbot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
+    "dotenv": "^17.2.4",
+    "fs-extra": "^11.3.3",
+    "googleapis": "^171.4.0",
+    "node-telegram-bot-api": "^0.67.0",
+    "puppeteer": "^24.37.2",
+    "robotjs": "^0.6.0"
+  }
+}

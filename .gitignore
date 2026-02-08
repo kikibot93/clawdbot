@@ -1,0 +1,17 @@
+# Secrets
+.env
+gmail_credentials.json
+
+# Dependencies
+node_modules/
+.venv/
+
+# Temp files
+temp/
+/tmp/
+
+# OS files
+.DS_Store
+
+# Lock files
+package-lock.json
