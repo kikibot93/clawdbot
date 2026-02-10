@@ -39,9 +39,30 @@ function canMakeApiCall() {
   return dailyApiCalls < dailyLimit;
 }
 
-function trackApiCall() {
-  checkDailyReset();
-  dailyApiCalls++;
+let apiBalance = 50.00; // Starting balance in USD
+let totalSpent = 0;
+
+// API pricing per 1K tokens (approximate)
+const API_COSTS = {
+  "claude-sonnet-4-20250514": { input: 0.003, output: 0.015 },
+  "claude-3-haiku-20240307": { input: 0.00025, output: 0.00125 }
+};
+
+function trackApiCost(model, inputTokens = 1000, outputTokens = 500) {
+  const costs = API_COSTS[model] || API_COSTS["claude-sonnet-4-20250514"];
+  const cost = (inputTokens / 1000 * costs.input) + (outputTokens / 1000 * costs.output);
+  totalSpent += cost;
+  apiBalance -= cost;
+  return cost;
+}
+
+function getBalanceInfo() {
+  return {
+    starting: 50.00,
+    spent: totalSpent,
+    remaining: apiBalance,
+    calls: dailyApiCalls
+  };
 }
 
 const SCRIPT_PATH = path.join(__dirname, "latest_from_sender.scpt");
@@ -100,7 +121,7 @@ bot.onText(/\/help/, (msg) => {
 /ping — Check if bot is alive
 /pause — Pause the bot (kill switch)
 /resume — Resume the bot
-/usage — API calls today
+/usage — API calls today + estimated balance
 /limit <n> — Set daily API limit
 /whoami — Show your Telegram ID
 
@@ -153,7 +174,11 @@ bot.onText(/\/resume/, (msg) => {
 bot.onText(/\/usage/, (msg) => {
   if (!isAdmin(msg)) return;
   checkDailyReset();
-  bot.sendMessage(msg.chat.id, `📊 API calls today: ${dailyApiCalls}/${dailyLimit}`);
+  const info = getBalanceInfo();
+  bot.sendMessage(msg.chat.id, 
+    `📊 Today: ${dailyApiCalls} calls\n` +
+    `💰 Spent today: ~$${(info.spent).toFixed(2)}\n` +
+    `💵 Remaining balance: ~$${info.remaining.toFixed(2)}`);
 });
 
 bot.onText(/\/limit (\d+)/, (msg, match) => {
@@ -750,7 +775,7 @@ const TOOLS = [
   // ---- LEARN SKILL ----
   {
     name: "learn_skill",
-    description: "Learn a new skill by having MCP write the code for it. Use when the user says 'learn to do X', 'add ability to Y', etc. The skill will be added to your capabilities and stored in the brain.",
+    description: "ONLY use when the user types the EXACT phrase 'learn_skill' followed by what to learn (e.g., 'learn_skill check_eth_price'). DO NOT use for normal requests or when user says 'learn to' or 'can you learn' - only the exact 'learn_skill' command triggers this.",
     input_schema: {
       type: "object",
       properties: {
@@ -1240,6 +1265,9 @@ REAL AI PHONE CALLS:
 
       // Smart model routing: Sonnet for first call (decides tools), Haiku for follow-ups
       const model = iterations <= 1 ? "claude-sonnet-4-20250514" : "claude-3-haiku-20240307";
+      
+      // Track API cost
+      trackApiCost(model);
 
       const response = await anthropic.messages.create({
         model,
