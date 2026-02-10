@@ -122,10 +122,9 @@ bot.onText(/\/help/, (msg) => {
 /gapdel <id> — Delete a gap
 
 🔧 *Self-Upgrade (Claude Code)*
-/upgrades — List drafted upgrades
-/review — View latest upgrade draft
-/review <file> — View specific draft
-/apply <file> — Apply upgrade + restart
+/upgrades — List past upgrade diffs
+/confirm — Apply pending upgrade + restart
+/revert — Undo pending upgrade changes
 
 📧 *Email*
 /emailmon — Toggle email notifications
@@ -739,11 +738,11 @@ const TOOLS = [
   // ---- SELF-UPGRADE ----
   {
     name: "self_upgrade",
-    description: "Use Claude Code to draft a code upgrade for yourself. This writes a proposed patch to a staging file for the developer to review. Use this when the user says 'upgrade yourself', 'fix that gap', or 'build that feature'. The developer must approve before it goes live.",
+    description: "Use Claude Code to directly edit your own code. This commits a checkpoint, runs Claude Code to make changes, then shows the user a diff in Telegram for approval. If they say yes, the bot restarts with the new code. If no, changes are reverted. Use when the user says 'fix yourself', 'add a feature', 'upgrade yourself', 'build that', etc.",
     input_schema: {
       type: "object",
       properties: {
-        task: { type: "string", description: "What to build or fix. Be very specific." }
+        task: { type: "string", description: "What to build or fix. Be very specific about what to change." }
       },
       required: ["task"]
     }
@@ -861,46 +860,85 @@ async function executeTool(name, input) {
     }
     // ---- SELF-UPGRADE ----
     case "self_upgrade": {
-      const upgradeDir = path.join(__dirname, "upgrades");
-      const timestamp = Date.now();
-      const outputFile = path.join(upgradeDir, `upgrade-${timestamp}.md`);
-      const prompt = `You are upgrading a Telegram bot (index.js in /Users/kiki/clawdbot/).
-Read index.js and db.js to understand the current codebase.
+      const prompt = `You are upgrading a Telegram bot codebase in /Users/kiki/clawdbot/.
+Read index.js and db.js first to understand the current code.
 TASK: ${input.task}
 
 RULES:
-- Output a complete, working code patch
-- Show exactly which lines to add/modify
-- Include the tool definition AND the executeTool handler AND any db.js changes
-- Do NOT break existing functionality
-- Write the full upgrade plan and code to: ${outputFile}
-
-Format the output file as:
-## Upgrade: [title]
-### What it does
-[description]
-### Changes to index.js
-[code blocks with context]
-### Changes to db.js (if any)
-[code blocks]
-### New dependencies (if any)
-[npm packages]`;
+- Edit the files directly. Make the changes needed.
+- Do NOT break existing functionality.
+- If adding a tool, add BOTH the tool definition in the TOOLS array AND the case in executeTool.
+- If you need db.js changes, edit db.js too and add exports.
+- If you need new npm packages, create a file /tmp/upgrade-deps.txt listing them.
+- Keep changes minimal and focused. Do not refactor unrelated code.
+- Test your logic mentally before writing.`;
 
       return new Promise((resolve) => {
-        const child = exec(
-          `claude --print -p "${prompt.replace(/"/g, '\\"')}"`,
-          { cwd: __dirname, timeout: 120000, maxBuffer: 1024 * 1024 },
-          async (err, stdout, stderr) => {
-            if (err) {
-              resolve(`ERROR: Claude Code failed: ${err.message}`);
-              return;
-            }
-            try {
-              await fs.outputFile(outputFile, stdout);
-              resolve(`✅ Upgrade drafted!\nFile: ${outputFile}\n\nUse /review in Telegram to see it, then /apply to apply it.`);
-            } catch (writeErr) {
-              resolve(`ERROR: Could not write upgrade file: ${writeErr.message}`);
-            }
+        // Step 1: Git checkpoint
+        exec("git add -A && git commit -m 'pre-upgrade checkpoint' --allow-empty",
+          { cwd: __dirname },
+          (commitErr) => {
+            // Step 2: Run Claude Code to edit files directly
+            exec(
+              `claude -p "${prompt.replace(/"/g, '\\"')}" --model claude-4-opus-20250514`,
+              { cwd: __dirname, timeout: 300000, maxBuffer: 5 * 1024 * 1024 },
+              async (err, stdout, stderr) => {
+                if (err) {
+                  // Revert on failure
+                  exec("git checkout -- .", { cwd: __dirname });
+                  resolve(`ERROR: Claude Code failed: ${err.message}`);
+                  return;
+                }
+
+                // Step 3: Get the diff
+                exec("git diff", { cwd: __dirname, maxBuffer: 1024 * 1024 }, async (diffErr, diff) => {
+                  if (!diff || diff.trim().length === 0) {
+                    resolve("Claude Code ran but made no changes. The task may already be done or wasn't clear enough.");
+                    return;
+                  }
+
+                  // Save diff for reference
+                  const upgradeDir = path.join(__dirname, "upgrades");
+                  await fs.ensureDir(upgradeDir);
+                  const timestamp = Date.now();
+                  await fs.writeFile(path.join(upgradeDir, `upgrade-${timestamp}.diff`), diff);
+
+                  // Store pending upgrade state
+                  global.pendingUpgrade = { diff, timestamp };
+
+                  // Send diff summary to admin
+                  const diffLines = diff.split("\n");
+                  const added = diffLines.filter(l => l.startsWith("+") && !l.startsWith("+++")).length;
+                  const removed = diffLines.filter(l => l.startsWith("-") && !l.startsWith("---")).length;
+                  const files = diffLines.filter(l => l.startsWith("diff --git")).map(l => l.split(" b/")[1]);
+
+                  let summary = `🔧 UPGRADE READY FOR REVIEW\n\n`;
+                  summary += `📁 Files changed: ${files.join(", ")}\n`;
+                  summary += `➕ ${added} lines added, ➖ ${removed} lines removed\n\n`;
+
+                  // Show truncated diff (first 3000 chars)
+                  const diffPreview = diff.substring(0, 3000);
+                  summary += `\`\`\`\n${diffPreview}${diff.length > 3000 ? "\n... (truncated)" : ""}\n\`\`\``;
+                  summary += `\n\n✅ Reply /confirm to apply and restart`;
+                  summary += `\n❌ Reply /revert to undo all changes`;
+
+                  // Install any new deps
+                  try {
+                    const depsFile = "/tmp/upgrade-deps.txt";
+                    if (await fs.pathExists(depsFile)) {
+                      const deps = (await fs.readFile(depsFile, "utf8")).trim();
+                      if (deps) {
+                        exec(`npm install ${deps}`, { cwd: __dirname });
+                        summary += `\n📦 Installing: ${deps}`;
+                      }
+                      await fs.remove(depsFile);
+                    }
+                  } catch (e) { /* ignore */ }
+
+                  resolve(summary);
+                });
+              }
+            );
           }
         );
       });
@@ -1161,7 +1199,7 @@ REAL AI PHONE CALLS:
       trackApiCall();
 
       // Smart model routing: Sonnet for first call (decides tools), Haiku for follow-ups
-      const model = iterations <= 1 ? "claude-sonnet-4-20250514" : "claude-3-5-haiku-20241022";
+      const model = iterations <= 1 ? "claude-sonnet-4-20250514" : "claude-3-haiku-20240307";
 
       const response = await anthropic.messages.create({
         model,
@@ -1372,68 +1410,54 @@ bot.onText(/\/gapdel\s+(\d+)/, (msg, match) => {
 });
 
 // ============================================================
-// SELF-UPGRADE REVIEW COMMANDS
+// SELF-UPGRADE COMMANDS
 // ============================================================
 
 bot.onText(/\/upgrades/, async (msg) => {
   if (!isAdmin(msg)) return;
   const upgradeDir = path.join(__dirname, "upgrades");
   try {
-    const files = (await fs.readdir(upgradeDir)).filter(f => f.endsWith(".md")).sort().reverse();
-    if (files.length === 0) return bot.sendMessage(msg.chat.id, "No upgrade drafts found.");
+    const files = (await fs.readdir(upgradeDir)).filter(f => f.endsWith(".diff")).sort().reverse();
+    if (files.length === 0) return bot.sendMessage(msg.chat.id, "No upgrade diffs found.");
     const list = files.map((f, i) => `${i + 1}. ${f}`).join("\n");
-    bot.sendMessage(msg.chat.id, `📦 Upgrade Drafts:\n${list}\n\nUse /review <filename> to view one.`);
+    bot.sendMessage(msg.chat.id, `📦 Upgrade History:\n${list}`);
   } catch (e) {
     bot.sendMessage(msg.chat.id, "No upgrades directory found.");
   }
 });
 
-bot.onText(/\/review(?:\s+(.+))?/, async (msg, match) => {
+bot.onText(/\/confirm/, (msg) => {
   if (!isAdmin(msg)) return;
-  const upgradeDir = path.join(__dirname, "upgrades");
-  try {
-    let filename = match[1];
-    if (!filename) {
-      const files = (await fs.readdir(upgradeDir)).filter(f => f.endsWith(".md")).sort().reverse();
-      if (files.length === 0) return bot.sendMessage(msg.chat.id, "No upgrade drafts found.");
-      filename = files[0];
-    }
-    const filePath = path.join(upgradeDir, filename);
-    const content = await fs.readFile(filePath, "utf8");
-    // Telegram has 4096 char limit, split if needed
-    const chunks = content.match(/[\s\S]{1,4000}/g) || [];
-    for (const chunk of chunks) {
-      await bot.sendMessage(msg.chat.id, chunk);
-    }
-    bot.sendMessage(msg.chat.id, `\n✅ End of ${filename}\nUse /apply ${filename} to apply this upgrade.`);
-  } catch (e) {
-    bot.sendMessage(msg.chat.id, `Error: ${e.message}`);
+  if (!global.pendingUpgrade) {
+    return bot.sendMessage(msg.chat.id, "No pending upgrade to confirm.");
   }
+  // Commit the changes and restart
+  exec("git add -A && git commit -m 'self-upgrade applied'", { cwd: __dirname }, (err) => {
+    // Write flag file so bot announces the upgrade after restart
+    const { diff } = global.pendingUpgrade;
+    const diffLines = diff.split("\n");
+    const files = diffLines.filter(l => l.startsWith("diff --git")).map(l => l.split(" b/")[1]);
+    const added = diffLines.filter(l => l.startsWith("+") && !l.startsWith("+++")).length;
+    const removed = diffLines.filter(l => l.startsWith("-") && !l.startsWith("---")).length;
+    const info = `📁 Files: ${files.join(", ")}\n➕ ${added} lines added, ➖ ${removed} removed`;
+    fs.writeFileSync(path.join(__dirname, ".upgrade-pending"), info);
+    global.pendingUpgrade = null;
+    bot.sendMessage(msg.chat.id, "✅ Upgrade committed! Restarting...");
+    setTimeout(() => process.exit(0), 2000);
+  });
 });
 
-bot.onText(/\/apply\s+(.+)/, async (msg, match) => {
+bot.onText(/\/revert/, (msg) => {
   if (!isAdmin(msg)) return;
-  const filename = match[1];
-  const filePath = path.join(__dirname, "upgrades", filename);
-  try {
-    const content = await fs.readFile(filePath, "utf8");
-    // Run Claude Code to apply the upgrade
-    bot.sendMessage(msg.chat.id, `⚙️ Applying upgrade ${filename}... Claude Code is working...`);
-    exec(
-      `claude --print -p "Apply the following upgrade to the codebase in /Users/kiki/clawdbot/. Make the exact changes described. Do NOT remove or break existing code. Here is the upgrade plan:\n\n${content.replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`,
-      { cwd: __dirname, timeout: 120000, maxBuffer: 1024 * 1024 },
-      async (err, stdout) => {
-        if (err) {
-          return bot.sendMessage(msg.chat.id, `❌ Apply failed: ${err.message}`);
-        }
-        bot.sendMessage(msg.chat.id, `✅ Upgrade applied! Output:\n${stdout.substring(0, 3000)}\n\nRestarting bot...`);
-        // Restart the bot
-        setTimeout(() => process.exit(0), 2000);
-      }
-    );
-  } catch (e) {
-    bot.sendMessage(msg.chat.id, `Error: ${e.message}`);
+  if (!global.pendingUpgrade) {
+    return bot.sendMessage(msg.chat.id, "No pending upgrade to revert.");
   }
+  // Revert all uncommitted changes
+  exec("git checkout -- .", { cwd: __dirname }, (err) => {
+    global.pendingUpgrade = null;
+    if (err) return bot.sendMessage(msg.chat.id, `❌ Revert failed: ${err.message}`);
+    bot.sendMessage(msg.chat.id, "↩️ Changes reverted. Bot is unchanged.");
+  });
 });
 
 // ============================================================
@@ -1514,6 +1538,19 @@ bot.onText(/\/emailmon\s*(on|off)?/, (msg, match) => {
 });
 
 console.log("Clawdbot running. Send /ping in Telegram.");
+
+// Notify admin on startup
+if (ADMIN_ID) {
+  // Check if we just came back from an upgrade (flag file)
+  const upgradeFlag = path.join(__dirname, ".upgrade-pending");
+  if (fs.pathExistsSync(upgradeFlag)) {
+    const upgradeInfo = fs.readFileSync(upgradeFlag, "utf8").trim();
+    fs.removeSync(upgradeFlag);
+    bot.sendMessage(ADMIN_ID, `🔄 I've restarted and applied the upgrade!\n\n${upgradeInfo}\n\nAll systems operational. ✅`);
+  } else {
+    bot.sendMessage(ADMIN_ID, "🟢 Clawdbot is online and ready.");
+  }
+}
 
 // Start shared server for WhatsApp + Voice
 ensureVoiceServerRunning().then(url => {
