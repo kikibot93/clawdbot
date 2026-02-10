@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "@ngrok/ngrok": "^1.7.0",
     "better-sqlite3": "^12.6.2",
     "dotenv": "^17.2.4",

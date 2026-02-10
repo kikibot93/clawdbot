@@ -9,6 +9,38 @@ const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 
 // ============================================================
+// BRAIN VERSION & MIGRATION SYSTEM
+// ============================================================
+
+const BRAIN_VERSION = 1;
+
+function getBrainVersion() {
+  try {
+    const row = db.prepare("SELECT value FROM metadata WHERE key = 'brain_version'").get();
+    return row ? parseInt(row.value) : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function setBrainVersion(version) {
+  db.prepare("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)").run();
+  db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('brain_version', ?)").run(String(version));
+}
+
+function migrateBrain() {
+  const currentVersion = getBrainVersion();
+  console.log(`🧠 Brain version: ${currentVersion} → ${BRAIN_VERSION}`);
+  
+  if (currentVersion < BRAIN_VERSION) {
+    console.log(`🔄 Migrating brain from v${currentVersion} to v${BRAIN_VERSION}...`);
+    // Migrations will be added here by MCP when brain evolves
+    setBrainVersion(BRAIN_VERSION);
+    console.log("✅ Brain migration complete");
+  }
+}
+
+// ============================================================
 // SCHEMA
 // ============================================================
 
@@ -94,6 +126,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_conversations_created ON conversations(created_at);
   CREATE INDEX IF NOT EXISTS idx_errors_tool ON errors(tool);
 `);
+
+// Run brain migration on startup
+migrateBrain();
 
 // ============================================================
 // MEMORY FUNCTIONS
@@ -358,6 +393,11 @@ function deleteGap(id) {
 
 module.exports = {
   db,
+  // Brain migration
+  getBrainVersion,
+  setBrainVersion,
+  migrateBrain,
+  BRAIN_VERSION,
   // Memory
   saveMemory,
   searchMemories,

@@ -2,10 +2,13 @@ require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const { exec } = require("child_process");
 const { execFile } = require("child_process");
+const { spawn } = require("child_process");
 const path = require("path");
 const Anthropic = require("@anthropic-ai/sdk");
 const fs = require("fs-extra");
 const os = require("os");
+const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
+const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio.js");
 
 const brain = require("./db");
 const anthropic = new Anthropic.default({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -43,6 +46,44 @@ function trackApiCall() {
   checkDailyReset();
   dailyApiCalls++;
 }
+
+// ============================================================
+// MCP CLIENT SETUP
+// ============================================================
+
+let mcpClient = null;
+let mcpConnected = false;
+
+async function initMcpClient() {
+  if (mcpClient) return mcpClient;
+  
+  try {
+    const serverPath = path.join(__dirname, 'mcp-server.js');
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [serverPath],
+    });
+    
+    mcpClient = new Client({
+      name: 'clawdbot',
+      version: '1.0.0',
+    }, {
+      capabilities: {},
+    });
+    
+    await mcpClient.connect(transport);
+    mcpConnected = true;
+    console.log('✅ MCP client connected');
+    return mcpClient;
+  } catch (err) {
+    console.error('❌ MCP client failed:', err.message);
+    mcpConnected = false;
+    return null;
+  }
+}
+
+// Initialize MCP client on startup
+initMcpClient().catch(err => console.error('MCP init error:', err));
 
 const SCRIPT_PATH = path.join(__dirname, "latest_from_sender.scpt");
 const SEND_SCRIPT_PATH = path.join(__dirname, "send_email.scpt");
@@ -747,6 +788,19 @@ const TOOLS = [
       required: ["task"]
     }
   },
+  // ---- LEARN SKILL ----
+  {
+    name: "learn_skill",
+    description: "Learn a new skill by having MCP write the code for it. Use when the user says 'learn to do X', 'add ability to Y', etc. The skill will be added to your capabilities and stored in the brain.",
+    input_schema: {
+      type: "object",
+      properties: {
+        skill_name: { type: "string", description: "Short name for the skill (e.g., 'check_bitcoin')" },
+        description: { type: "string", description: "What the skill does (e.g., 'Check current Bitcoin price from CoinGecko API')" }
+      },
+      required: ["skill_name", "description"]
+    }
+  },
   // ---- CAPABILITY GAPS ----
   {
     name: "log_capability_gap",
@@ -858,89 +912,117 @@ async function executeTool(name, input) {
         `- Memory types: ${stats.memoryTypes.map(t => `${t.type}(${t.count})`).join(", ") || "none"}\n` +
         `- DB size: ${stats.dbSizeMB} MB`;
     }
-    // ---- SELF-UPGRADE ----
+    // ---- SELF-UPGRADE (via MCP) ----
     case "self_upgrade": {
-      const prompt = `You are upgrading a Telegram bot codebase in /Users/kiki/clawdbot/.
-Read index.js and db.js first to understand the current code.
-TASK: ${input.task}
+      if (!mcpConnected) {
+        return "ERROR: MCP server not connected. Cannot perform upgrades.";
+      }
 
-RULES:
-- Edit the files directly. Make the changes needed.
-- Do NOT break existing functionality.
-- If adding a tool, add BOTH the tool definition in the TOOLS array AND the case in executeTool.
-- If you need db.js changes, edit db.js too and add exports.
-- If you need new npm packages, create a file /tmp/upgrade-deps.txt listing them.
-- Keep changes minimal and focused. Do not refactor unrelated code.
-- Test your logic mentally before writing.`;
-
-      return new Promise((resolve) => {
-        // Step 1: Git checkpoint
-        exec("git add -A && git commit -m 'pre-upgrade checkpoint' --allow-empty",
-          { cwd: __dirname },
-          (commitErr) => {
-            // Step 2: Run Claude Code to edit files directly
-            exec(
-              `claude -p "${prompt.replace(/"/g, '\\"')}" --model claude-4-opus-20250514`,
-              { cwd: __dirname, timeout: 300000, maxBuffer: 5 * 1024 * 1024 },
-              async (err, stdout, stderr) => {
-                if (err) {
-                  // Revert on failure
-                  exec("git checkout -- .", { cwd: __dirname });
-                  resolve(`ERROR: Claude Code failed: ${err.message}`);
-                  return;
-                }
-
-                // Step 3: Get the diff
-                exec("git diff", { cwd: __dirname, maxBuffer: 1024 * 1024 }, async (diffErr, diff) => {
-                  if (!diff || diff.trim().length === 0) {
-                    resolve("Claude Code ran but made no changes. The task may already be done or wasn't clear enough.");
-                    return;
-                  }
-
-                  // Save diff for reference
-                  const upgradeDir = path.join(__dirname, "upgrades");
-                  await fs.ensureDir(upgradeDir);
-                  const timestamp = Date.now();
-                  await fs.writeFile(path.join(upgradeDir, `upgrade-${timestamp}.diff`), diff);
-
-                  // Store pending upgrade state
-                  global.pendingUpgrade = { diff, timestamp };
-
-                  // Send diff summary to admin
-                  const diffLines = diff.split("\n");
-                  const added = diffLines.filter(l => l.startsWith("+") && !l.startsWith("+++")).length;
-                  const removed = diffLines.filter(l => l.startsWith("-") && !l.startsWith("---")).length;
-                  const files = diffLines.filter(l => l.startsWith("diff --git")).map(l => l.split(" b/")[1]);
-
-                  let summary = `🔧 UPGRADE READY FOR REVIEW\n\n`;
-                  summary += `📁 Files changed: ${files.join(", ")}\n`;
-                  summary += `➕ ${added} lines added, ➖ ${removed} lines removed\n\n`;
-
-                  // Show truncated diff (first 3000 chars)
-                  const diffPreview = diff.substring(0, 3000);
-                  summary += `\`\`\`\n${diffPreview}${diff.length > 3000 ? "\n... (truncated)" : ""}\n\`\`\``;
-                  summary += `\n\n✅ Reply /confirm to apply and restart`;
-                  summary += `\n❌ Reply /revert to undo all changes`;
-
-                  // Install any new deps
-                  try {
-                    const depsFile = "/tmp/upgrade-deps.txt";
-                    if (await fs.pathExists(depsFile)) {
-                      const deps = (await fs.readFile(depsFile, "utf8")).trim();
-                      if (deps) {
-                        exec(`npm install ${deps}`, { cwd: __dirname });
-                        summary += `\n📦 Installing: ${deps}`;
-                      }
-                      await fs.remove(depsFile);
-                    }
-                  } catch (e) { /* ignore */ }
-
-                  resolve(summary);
-                });
-              }
-            );
+      return new Promise(async (resolve) => {
+        try {
+          const client = await initMcpClient();
+          if (!client) {
+            resolve("ERROR: Failed to connect to MCP server");
+            return;
           }
-        );
+
+          // Call MCP claude_code_edit tool
+          const result = await client.callTool({
+            name: 'claude_code_edit',
+            arguments: { task: input.task }
+          });
+
+          const resultText = result.content[0].text;
+          const { diff, timestamp } = JSON.parse(resultText);
+
+          // Store pending upgrade state
+          global.pendingUpgrade = { diff, timestamp };
+
+          // Send diff summary to admin
+          const diffLines = diff.split("\n");
+          const added = diffLines.filter(l => l.startsWith("+") && !l.startsWith("+++")).length;
+          const removed = diffLines.filter(l => l.startsWith("-") && !l.startsWith("---")).length;
+          const files = diffLines.filter(l => l.startsWith("diff --git")).map(l => l.split(" b/")[1]);
+
+          let summary = `🔧 UPGRADE READY FOR REVIEW\n\n`;
+          summary += `📁 Files changed: ${files.join(", ")}\n`;
+          summary += `➕ ${added} lines added, ➖ ${removed} lines removed\n\n`;
+
+          // Show truncated diff (first 3000 chars)
+          const diffPreview = diff.substring(0, 3000);
+          summary += `\`\`\`\n${diffPreview}${diff.length > 3000 ? "\n... (truncated)" : ""}\n\`\`\``;
+          summary += `\n\n✅ Reply /confirm to apply and restart`;
+          summary += `\n❌ Reply /revert to undo all changes`;
+
+          resolve(summary);
+        } catch (err) {
+          resolve(`ERROR: MCP upgrade failed: ${err.message}`);
+        }
+      });
+    }
+    // ---- LEARN SKILL ----
+    case "learn_skill": {
+      if (!mcpConnected) {
+        return "ERROR: MCP server not connected. Cannot learn new skills.";
+      }
+
+      return new Promise(async (resolve) => {
+        try {
+          const client = await initMcpClient();
+          if (!client) {
+            resolve("ERROR: Failed to connect to MCP server");
+            return;
+          }
+
+          // First, upgrade brain to add skills table if needed
+          await client.callTool({
+            name: 'upgrade_brain',
+            arguments: { 
+              description: `Add skills table with columns: id, name, description, code, usage_count, last_used, created_at. Also add functions: addSkill, getSkill, getAllSkills, incrementSkillUsage.`
+            }
+          });
+
+          // Then add the skill code
+          const task = `Add a new skill called "${input.skill_name}" that does: ${input.description}
+
+Steps:
+1. Create a function for this skill in index.js
+2. Add a tool definition for it in the TOOLS array
+3. Add a case in executeTool to call the function
+4. Store the skill in the brain using addSkill()
+5. Make sure it's well-documented and follows existing patterns`;
+
+          const result = await client.callTool({
+            name: 'claude_code_edit',
+            arguments: { task }
+          });
+
+          const resultText = result.content[0].text;
+          const { diff, timestamp } = JSON.parse(resultText);
+
+          // Store pending upgrade state
+          global.pendingUpgrade = { diff, timestamp };
+
+          // Send diff summary
+          const diffLines = diff.split("\n");
+          const added = diffLines.filter(l => l.startsWith("+") && !l.startsWith("+++")).length;
+          const removed = diffLines.filter(l => l.startsWith("-") && !l.startsWith("---")).length;
+          const files = diffLines.filter(l => l.startsWith("diff --git")).map(l => l.split(" b/")[1]);
+
+          let summary = `📚 NEW SKILL READY: ${input.skill_name}\n\n`;
+          summary += `📁 Files changed: ${files.join(", ")}\n`;
+          summary += `➕ ${added} lines added, ➖ ${removed} lines removed\n\n`;
+          summary += `Description: ${input.description}\n\n`;
+
+          const diffPreview = diff.substring(0, 2500);
+          summary += `\`\`\`\n${diffPreview}${diff.length > 2500 ? "\n... (truncated)" : ""}\n\`\`\``;
+          summary += `\n\n✅ Reply /confirm to learn this skill`;
+          summary += `\n❌ Reply /revert to cancel`;
+
+          resolve(summary);
+        } catch (err) {
+          resolve(`ERROR: Failed to learn skill: ${err.message}`);
+        }
       });
     }
     // ---- CAPABILITY GAPS ----
