@@ -1,0 +1,36 @@
+{
+  "memories": [],
+  "conversations": [
+    {
+      "id": 1,
+      "platform": "telegram",
+      "user_id": "8593468958",
+      "role": "user",
+      "content": "Hey hows it going Kiki?",
+      "metadata": "{}",
+      "created_at": "2026-02-09 04:48:26"
+    },
+    {
+      "id": 2,
+      "platform": "telegram",
+      "user_id": "8593468958",
+      "role": "assistant",
+      "content": "*greets warmly* Hello! As your friendly Mac assistant, I'm doing great and ready to help out however I can. How can I assist you today?",
+      "metadata": "{}",
+      "created_at": "2026-02-09 04:48:27"
+    }
+  ],
+  "errors": [],
+  "users": [
+    {
+      "id": "8593468958",
+      "name": "",
+      "platform": "telegram",
+      "role": "user",
+      "created_at": "2026-02-09 04:48:26",
+      "last_seen": "2026-02-09 04:48:26"
+    }
+  ],
+  "tasks": [],
+  "exportedAt": "2026-02-09T04:54:04.361Z"
+}

@@ -12,11 +12,18 @@
   "type": "commonjs",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
+    "@ngrok/ngrok": "^1.7.0",
+    "better-sqlite3": "^12.6.2",
     "dotenv": "^17.2.4",
+    "express": "^5.2.1",
     "fs-extra": "^11.3.3",
     "googleapis": "^171.4.0",
     "node-telegram-bot-api": "^0.67.0",
+    "openai": "^6.18.0",
     "puppeteer": "^24.37.2",
-    "robotjs": "^0.6.0"
+    "robotjs": "^0.6.0",
+    "twilio": "^5.12.1",
+    "uuid": "^13.0.0",
+    "ws": "^8.19.0"
   }
 }
