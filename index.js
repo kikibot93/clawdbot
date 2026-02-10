@@ -1433,17 +1433,20 @@ bot.onText(/\/confirm/, (msg) => {
   }
   // Commit the changes and restart
   exec("git add -A && git commit -m 'self-upgrade applied'", { cwd: __dirname }, (err) => {
-    // Write flag file so bot announces the upgrade after restart
-    const { diff } = global.pendingUpgrade;
-    const diffLines = diff.split("\n");
-    const files = diffLines.filter(l => l.startsWith("diff --git")).map(l => l.split(" b/")[1]);
-    const added = diffLines.filter(l => l.startsWith("+") && !l.startsWith("+++")).length;
-    const removed = diffLines.filter(l => l.startsWith("-") && !l.startsWith("---")).length;
-    const info = `📁 Files: ${files.join(", ")}\n➕ ${added} lines added, ➖ ${removed} removed`;
-    fs.writeFileSync(path.join(__dirname, ".upgrade-pending"), info);
-    global.pendingUpgrade = null;
-    bot.sendMessage(msg.chat.id, "✅ Upgrade committed! Restarting...");
-    setTimeout(() => process.exit(0), 2000);
+    // Push to GitHub
+    exec("git push origin main", { cwd: __dirname }, (pushErr) => {
+      // Write flag file so bot announces the upgrade after restart
+      const { diff } = global.pendingUpgrade;
+      const diffLines = diff.split("\n");
+      const files = diffLines.filter(l => l.startsWith("diff --git")).map(l => l.split(" b/")[1]);
+      const added = diffLines.filter(l => l.startsWith("+") && !l.startsWith("+++")).length;
+      const removed = diffLines.filter(l => l.startsWith("-") && !l.startsWith("---")).length;
+      const info = `📁 Files: ${files.join(", ")}\n➕ ${added} lines added, ➖ ${removed} removed`;
+      fs.writeFileSync(path.join(__dirname, ".upgrade-pending"), info);
+      global.pendingUpgrade = null;
+      bot.sendMessage(msg.chat.id, `✅ Upgrade committed${pushErr ? " (push failed)" : " + pushed to GitHub"}! Restarting...`);
+      setTimeout(() => process.exit(0), 2000);
+    });
   });
 });
 
