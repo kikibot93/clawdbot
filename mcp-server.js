@@ -19,42 +19,43 @@ const server = new Server(
   }
 );
 
-// Claude Code edit tool
+// Tool definitions
+const tools = [
+  {
+    name: 'claude_code_edit',
+    description: 'Use Claude Code (Opus) to edit files in the clawdbot codebase. Commits a checkpoint, makes changes, returns diff for review.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: 'What to build or fix. Be very specific about what to change.',
+        },
+      },
+      required: ['task'],
+    },
+  },
+  {
+    name: 'upgrade_brain',
+    description: 'Upgrade the brain schema (add tables, fields, functions to db.js). Use when bot needs new data storage capabilities.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        description: {
+          type: 'string',
+          description: 'What brain capability to add (e.g., "Add skills table to store learned skills")',
+        },
+      },
+      required: ['description'],
+    },
+  },
+];
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: 'claude_code_edit',
-        description: 'Use Claude Code (Opus) to edit files in the clawdbot codebase. Commits a checkpoint, makes changes, returns diff for review.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            task: {
-              type: 'string',
-              description: 'What to build or fix. Be very specific about what to change.',
-            },
-          },
-          required: ['task'],
-        },
-      },
-      {
-        name: 'upgrade_brain',
-        description: 'Upgrade the brain schema (add tables, fields, functions to db.js). Use when bot needs new data storage capabilities.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            description: {
-              type: 'string',
-              description: 'What brain capability to add (e.g., "Add skills table to store learned skills")',
-            },
-          },
-          required: ['description'],
-        },
-      },
-    ],
-  };
+  return { tools };
 });
 
+// Handle tools/call requests  
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
@@ -171,7 +172,10 @@ Follow the existing patterns in db.js. Keep it clean and consistent.`;
 }
 
 // Start server
-const transport = new StdioServerTransport();
-server.connect(transport);
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error('MCP server running on stdio');
+}
 
-console.error('MCP server running on stdio');
+main().catch(console.error);
