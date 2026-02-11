@@ -90,6 +90,7 @@ const ADMIN_ID = process.env.TELEGRAM_ADMIN_ID;
 const ALLOWED_USERS = new Set([
   String(process.env.TELEGRAM_ADMIN_ID),  // you (full access)
   "1764499257",                            // dad (limited access)
+  "437905219",                             // friend (limited access)
 ]);
 
 function isAdmin(msg) {
