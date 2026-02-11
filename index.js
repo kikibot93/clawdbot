@@ -39,6 +39,11 @@ function canMakeApiCall() {
   return dailyApiCalls < dailyLimit;
 }
 
+function trackApiCall() {
+  checkDailyReset();
+  dailyApiCalls++;
+}
+
 let apiBalance = 50.00; // Starting balance in USD
 let totalSpent = 0;
 
